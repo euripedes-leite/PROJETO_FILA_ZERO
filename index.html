@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fila Zero — Fluxo de Visitantes e Dimensionamento de Caixas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen p-6 font-sans">
+    <div class="max-w-7xl mx-auto space-y-6">
+
+        <!-- Cabeçalho -->
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg gap-4">
+            <div>
+                <h1 class="text-2xl font-bold text-blue-400">Fila Zero — Supervisório de Fluxo e Caixas</h1>
+                <p class="text-slate-400 text-sm">Contagem de Visitantes por Visão Computacional, Dimensionamento de Checkouts e Dias de Pico</p>
+            </div>
+            <div id="status-conexao" class="px-4 py-2 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                Conectando ao WebSocket...
+            </div>
+        </header>
+
+        <!-- Navegação entre Abas -->
+        <nav class="flex flex-wrap gap-2 border-b border-slate-700 pb-3">
+            <button onclick="mudarAba('aba-aovivo')" id="btn-aba-aovivo"
+                class="tab-btn px-5 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white shadow transition">
+                📡 Monitoramento Ao Vivo & Caixas
+            </button>
+            <button onclick="mudarAba('aba-dias')" id="btn-aba-dias"
+                class="tab-btn px-5 py-2.5 rounded-lg text-sm font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700 transition">
+                📅 Movimentação por Dia & Semana
+            </button>
+            <button onclick="mudarAba('aba-banco')" id="btn-aba-banco"
+                class="tab-btn px-5 py-2.5 rounded-lg text-sm font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700 transition">
+                🗄️ Registros do Banco (SQLite)
+            </button>
+        </nav>
+
+        <!-- ========================================================= -->
+        <!-- ABA 1: MONITORAMENTO AO VIVO & CAIXAS                     -->
+        <!-- ========================================================= -->
+        <section id="aba-aovivo" class="tab-content space-y-6">
+
+            <!-- KPI Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
+                <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow">
+                    <p class="text-slate-400 text-xs font-medium uppercase">Pessoas na Loja Agora</p>
+                    <h2 id="kpi-lotacao" class="text-4xl font-extrabold text-sky-400 mt-2">0</h2>
+                    <p class="text-xs text-slate-500 mt-1">Entradas menos saídas</p>
+                </div>
+
+                <div class="bg-slate-800 p-5 rounded-xl border-2 border-amber-500/60 shadow">
+                    <p class="text-amber-300 text-xs font-bold uppercase">Caixas Necessários</p>
+                    <h2 id="kpi-caixas" class="text-4xl font-extrabold text-amber-400 mt-2">1</h2>
+                    <p id="kpi-caixas-sub" class="text-xs text-slate-400 mt-1">Para atender o fluxo atual</p>
+                </div>
+
+                <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow">
+                    <p class="text-slate-400 text-xs font-medium uppercase">Visitantes (Sessão)</p>
+                    <h2 id="kpi-entradas" class="text-4xl font-extrabold text-emerald-400 mt-2">0</h2>
+                    <p id="kpi-saidas-sub" class="text-xs text-slate-500 mt-1">Saídas registradas: 0</p>
+                </div>
+
+                <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow">
+                    <p class="text-slate-400 text-xs font-medium uppercase">Dia Mais Movimentado</p>
+                    <h2 id="kpi-melhor-dia" class="text-2xl font-extrabold text-white mt-3">--</h2>
+                    <p id="kpi-melhor-dia-sub" class="text-xs text-slate-500 mt-1">Histórico do mercado</p>
+                </div>
+
+                <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow">
+                    <p class="text-slate-400 text-xs font-medium uppercase">Horário de Pico Geral</p>
+                    <h2 id="kpi-pico-hora" class="text-3xl font-extrabold text-purple-400 mt-2">--:--</h2>
+                    <p id="kpi-pico-hora-sub" class="text-xs text-slate-500 mt-1">Faixa de maior movimento</p>
+                </div>
+            </div>
+
+            <!-- Alerta Visual quando exigir abertura de mais caixas -->
+            <div id="banner-alerta-caixas" class="hidden bg-amber-950/60 border border-amber-500/70 p-4 rounded-xl flex items-center justify-between text-amber-200">
+                <div class="flex items-center space-x-3">
+                    <span class="text-2xl">🛒</span>
+                    <div>
+                        <h3 class="font-bold">Aumento de Fluxo Detectado!</h3>
+                        <p id="texto-alerta-caixas" class="text-xs opacity-90">Recomenda-se abrir mais caixas para evitar formação de fila.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gráfico em Tempo Real + Controles de Demonstração -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-2 bg-slate-800 p-6 rounded-xl border border-slate-700 shadow">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-bold text-slate-200">Fluxo de Clientes e Ocupação em Tempo Real</h3>
+                        <span class="text-xs text-slate-400">Atualização automática via sensor</span>
+                    </div>
+                    <div class="h-64">
+                        <canvas id="chartTempoReal"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow flex flex-col justify-between space-y-4">
+                    <div>
+                        <h3 class="font-bold text-slate-200 mb-1">Controles de Demonstração</h3>
+                        <p class="text-xs text-slate-400 mb-4">Simule entradas para ver o cálculo de caixas subir ou gere 7 dias de histórico no banco:</p>
+
+                        <div class="space-y-2.5">
+                            <button onclick="simularEvento('ENTRADA')"
+                                class="w-full py-2 px-4 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-semibold transition">
+                                + Simular Entrada (1 pessoa)
+                            </button>
+                            <button onclick="simularLoteEntradas(15)"
+                                class="w-full py-2 px-4 bg-amber-600 hover:bg-amber-500 rounded-lg text-sm font-semibold transition">
+                                ⚡ Simular Chegada de Grupo (+15)
+                            </button>
+                            <button onclick="simularEvento('SAIDA')"
+                                class="w-full py-2 px-4 bg-rose-600 hover:bg-rose-500 rounded-lg text-sm font-semibold transition">
+                                - Simular Saída (1 pessoa)
+                            </button>
+                            <button onclick="popularDemo7Dias()" id="btn-popular-demo"
+                                class="w-full py-2 px-4 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-semibold transition">
+                                📅 Gerar Histórico de 7 Dias no Banco
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="pt-3 border-t border-slate-700">
+                        <button onclick="zerarContadores()"
+                            class="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-semibold transition">
+                            🔄 Zerar Contadores da Sessão
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================================================= -->
+        <!-- ABA 2: MOVIMENTAÇÃO POR DIA & SEMANA                      -->
+        <!-- ========================================================= -->
+        <section id="aba-dias" class="tab-content hidden space-y-6">
+
+            <!-- Consulta por Data Específica -->
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-700 pb-5">
+                    <div>
+                        <h3 class="text-lg font-bold text-blue-400">Consultar Movimentação por Data Específica</h3>
+                        <p class="text-xs text-slate-400">Selecione qualquer dia no calendário para ver o total de visitantes e o comportamento por horário</p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <input type="date" id="input-data-consulta"
+                            class="bg-slate-900 border border-slate-600 text-white text-sm rounded-lg px-3.5 py-2 focus:outline-none focus:border-blue-500">
+                        <button onclick="consultarDiaEscolhido()"
+                            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-semibold transition">
+                            Consultar Dia
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Resultado da Data Consultada -->
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-4 pt-5">
+                    <div class="bg-slate-900/70 p-4 rounded-lg border border-slate-700/70">
+                        <p class="text-xs text-slate-400">Data / Dia da Semana</p>
+                        <p id="res-dia-nome" class="text-lg font-bold text-white mt-1">--</p>
+                    </div>
+                    <div class="bg-slate-900/70 p-4 rounded-lg border border-slate-700/70">
+                        <p class="text-xs text-slate-400">Total de Visitantes no Dia</p>
+                        <p id="res-dia-visitas" class="text-2xl font-extrabold text-emerald-400 mt-1">0 pessoas</p>
+                    </div>
+                    <div class="bg-slate-900/70 p-4 rounded-lg border border-slate-700/70">
+                        <p class="text-xs text-slate-400">Saídas Registradas</p>
+                        <p id="res-dia-saidas" class="text-2xl font-extrabold text-rose-400 mt-1">0 pessoas</p>
+                    </div>
+                    <div class="bg-slate-900/70 p-4 rounded-lg border border-slate-700/70">
+                        <p class="text-xs text-slate-400">Horário de Pico Nesse Dia</p>
+                        <p id="res-dia-pico" class="text-2xl font-extrabold text-amber-400 mt-1">--:--</p>
+                    </div>
+                </div>
+
+                <!-- Gráfico Horário do Dia Escolhido -->
+                <div class="mt-6">
+                    <h4 class="text-sm font-semibold text-slate-300 mb-3">Distribuição de Visitas por Horário no Dia Selecionado (07h às 22h)</h4>
+                    <div class="h-60">
+                        <canvas id="chartHorarioDia"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Comparativos Semanais e Diários -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow">
+                    <h3 class="font-bold text-slate-200 mb-1">Ranking de Movimentação por Dia da Semana</h3>
+                    <p class="text-xs text-slate-400 mb-4">Identifica qual dia da semana atrai o maior público ao mercado</p>
+                    <div class="h-64">
+                        <canvas id="chartDiaSemana"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow">
+                    <h3 class="font-bold text-slate-200 mb-1">Histórico Diário de Visitantes (Últimos Dias)</h3>
+                    <p class="text-xs text-slate-400 mb-4">Comparativo do volume total de entradas dia a dia</p>
+                    <div class="h-64">
+                        <canvas id="chartHistoricoDias"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================================================= -->
+        <!-- ABA 3: REGISTROS DO BANCO (SQLITE)                        -->
+        <!-- ========================================================= -->
+        <section id="aba-banco" class="tab-content hidden space-y-6">
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow space-y-4">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h3 class="text-lg font-bold text-emerald-400">Consolidado de Visitas por Dia (SQLite)</h3>
+                        <p class="text-xs text-slate-400">Total de visitantes agrupados por data no banco mercado_analytics.db</p>
+                    </div>
+                    <button onclick="carregarBancoDados()"
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-semibold transition">
+                        🔄 Atualizar Dados
+                    </button>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase">
+                                <th class="py-3 px-4">Data</th>
+                                <th class="py-3 px-4">Dia da Semana</th>
+                                <th class="py-3 px-4">Total de Visitantes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabela-resumo-dias" class="divide-y divide-slate-700/60">
+                            <tr><td colspan="3" class="py-6 text-center text-slate-500">Carregando...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow space-y-4">
+                <h3 class="text-lg font-bold text-slate-200">Últimos 30 Eventos Capturados pelo Sensor</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse text-sm">
+                        <thead>
+                            <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase">
+                                <th class="py-3 px-4">ID</th>
+                                <th class="py-3 px-4">Data e Hora</th>
+                                <th class="py-3 px-4">Movimento</th>
+                                <th class="py-3 px-4">Pessoas na Loja no Momento</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabela-eventos-individuais" class="divide-y divide-slate-700/60">
+                            <tr><td colspan="4" class="py-6 text-center text-slate-500">Carregando...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <script>
+        const API_BASE = "http://127.0.0.1:8000";
+        let estadoAtual = { entradas_total: 0, saidas_total: 0, lotacao_atual: 0, caixas_recomendados: 1 };
+
+        const hojeISO = new Date().toISOString().split('T')[0];
+        document.getElementById('input-data-consulta').value = hojeISO;
+
+        function mudarAba(abaId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(abaId).classList.remove('hidden');
+
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.className = "tab-btn px-5 py-2.5 rounded-lg text-sm font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700 transition";
+            });
+            document.getElementById('btn-' + abaId).className = "tab-btn px-5 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white shadow transition";
+
+            if (abaId === 'aba-dias') {
+                carregarAnalyticsGeral();
+                consultarDiaEscolhido();
+            } else if (abaId === 'aba-banco') {
+                carregarBancoDados();
+            }
+
+            chartTempoReal.resize();
+            chartHorarioDia.resize();
+            chartDiaSemana.resize();
+            chartHistoricoDias.resize();
+        }
+
+        const chartTempoReal = new Chart(document.getElementById('chartTempoReal').getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: ['Início'],
+                datasets: [
+                    {
+                        label: 'Pessoas na Loja Agora',
+                        data: [0],
+                        borderColor: '#38bdf8',
+                        backgroundColor: 'rgba(56, 189, 248, 0.15)',
+                        fill: true,
+                        tension: 0.35
+                    },
+                    {
+                        label: 'Entradas Acumuladas',
+                        data: [0],
+                        borderColor: '#34d399',
+                        tension: 0.35
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#cbd5e1' } } },
+                scales: {
+                    x: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
+                    y: { beginAtZero: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+                }
+            }
+        });
+
+        const chartHorarioDia = new Chart(document.getElementById('chartHorarioDia').getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Visitantes por Hora',
+                    data: [],
+                    backgroundColor: '#3b82f6',
+                    borderRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: '#94a3b8' }, grid: { display: false } },
+                    y: { beginAtZero: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+                }
+            }
+        });
+
+        const chartDiaSemana = new Chart(document.getElementById('chartDiaSemana').getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'],
+                datasets: [{
+                    label: 'Total de Visitantes',
+                    data: [0, 0, 0, 0, 0, 0, 0],
+                    backgroundColor: '#64748b',
+                    borderRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: '#94a3b8' }, grid: { display: false } },
+                    y: { beginAtZero: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+                }
+            }
+        });
+
+        const chartHistoricoDias = new Chart(document.getElementById('chartHistoricoDias').getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Visitantes no Dia',
+                    data: [],
+                    borderColor: '#10b981',
+                    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 5
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
+                    y: { beginAtZero: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+                }
+            }
+        });
+
+        const ws = new WebSocket("ws://127.0.0.1:8000/ws/fluxo");
+        const statusEl = document.getElementById("status-conexao");
+
+        ws.onopen = () => {
+            statusEl.innerText = "● Sensor & API Online";
+            statusEl.className = "px-4 py-2 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
+            carregarAnalyticsGeral();
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            estadoAtual = data;
+
+            const caixas = data.caixas_recomendados || 1;
+            document.getElementById("kpi-lotacao").innerText = data.lotacao_atual;
+            document.getElementById("kpi-caixas").innerText = caixas;
+            document.getElementById("kpi-caixas-sub").innerText = caixas === 1
+                ? "1 caixa operando atende bem"
+                : `Abrir ${caixas} caixas simultâneos`;
+            document.getElementById("kpi-entradas").innerText = data.entradas_total;
+            document.getElementById("kpi-saidas-sub").innerText = `Saídas registradas: ${data.saidas_total}`;
+
+            const banner = document.getElementById("banner-alerta-caixas");
+            if (caixas >= 2) {
+                banner.classList.remove("hidden");
+                document.getElementById("texto-alerta-caixas").innerText =
+                    `Com ${data.lotacao_atual} pessoas na loja, o sistema recomenda ${caixas} caixas abertos para manter o fluxo rápido.`;
+            } else {
+                banner.classList.add("hidden");
+            }
+
+            const horaAgora = new Date().toLocaleTimeString('pt-BR', { hour12: false });
+            if (chartTempoReal.data.labels.length > 15) {
+                chartTempoReal.data.labels.shift();
+                chartTempoReal.data.datasets[0].data.shift();
+                chartTempoReal.data.datasets[1].data.shift();
+            }
+            chartTempoReal.data.labels.push(horaAgora);
+            chartTempoReal.data.datasets[0].data.push(data.lotacao_atual);
+            chartTempoReal.data.datasets[1].data.push(data.entradas_total);
+            chartTempoReal.update();
+        };
+
+        ws.onclose = () => {
+            statusEl.innerText = "○ Backend Offline";
+            statusEl.className = "px-4 py-2 rounded-full text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30";
+        };
+
+        async function carregarAnalyticsGeral() {
+            try {
+                const res = await fetch(`${API_BASE}/api/analytics/geral`);
+                const dados = await res.json();
+
+                if (dados.dia_mais_movimentado && dados.dia_mais_movimentado.total > 0) {
+                    document.getElementById("kpi-melhor-dia").innerText = dados.dia_mais_movimentado.dia;
+                    document.getElementById("kpi-melhor-dia-sub").innerText = `${dados.dia_mais_movimentado.total} visitas registradas`;
+                }
+                document.getElementById("kpi-pico-hora").innerText = dados.horario_pico;
+                if (dados.visitas_pico > 0) {
+                    document.getElementById("kpi-pico-hora-sub").innerText = `${dados.visitas_pico} entradas nessa faixa`;
+                }
+
+                const totaisSemana = dados.visitas_por_semana.map(d => d.total);
+                const maxSemana = Math.max(...totaisSemana);
+                const coresSemana = totaisSemana.map(v => (v === maxSemana && v > 0) ? '#f59e0b' : '#475569');
+
+                chartDiaSemana.data.labels = dados.visitas_por_semana.map(d => d.dia);
+                chartDiaSemana.data.datasets[0].data = totaisSemana;
+                chartDiaSemana.data.datasets[0].backgroundColor = coresSemana;
+                chartDiaSemana.update();
+
+                chartHistoricoDias.data.labels = dados.visitas_por_data.map(d => {
+                    const partes = d.data.split('-');
+                    return `${partes[2]}/${partes[1]}`;
+                });
+                chartHistoricoDias.data.datasets[0].data = dados.visitas_por_data.map(d => d.total);
+                chartHistoricoDias.update();
+            } catch (e) {
+                console.error("Erro ao carregar analytics geral:", e);
+            }
+        }
+
+        async function consultarDiaEscolhido() {
+            const dataEscolhida = document.getElementById('input-data-consulta').value;
+            if (!dataEscolhida) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/analytics/dia?data=${dataEscolhida}`);
+                const info = await res.json();
+
+                const partes = info.data.split('-');
+                const dataFormatada = `${partes[2]}/${partes[1]}/${partes[0]}`;
+
+                document.getElementById("res-dia-nome").innerText = `${dataFormatada} (${info.dia_semana})`;
+                document.getElementById("res-dia-visitas").innerText = `${info.total_visitas} pessoas`;
+                document.getElementById("res-dia-saidas").innerText = `${info.total_saidas} pessoas`;
+                document.getElementById("res-dia-pico").innerText = info.total_visitas > 0
+                    ? `${info.horario_pico} (${info.visitas_no_pico} vis.)`
+                    : "--:--";
+
+                chartHorarioDia.data.labels = info.fluxo_horario.map(h => h.hora);
+                chartHorarioDia.data.datasets[0].data = info.fluxo_horario.map(h => h.total);
+                chartHorarioDia.update();
+            } catch (e) {
+                console.error("Erro ao consultar dia:", e);
+            }
+        }
+
+        async function carregarBancoDados() {
+            try {
+                const res = await fetch(`${API_BASE}/api/historico`);
+                const dados = await res.json();
+
+                const tbodyResumo = document.getElementById("tabela-resumo-dias");
+                if (dados.resumo_diario.length === 0) {
+                    tbodyResumo.innerHTML = `<tr><td colspan="3" class="py-6 text-center text-slate-500">Nenhum dado consolidado ainda.</td></tr>`;
+                } else {
+                    tbodyResumo.innerHTML = dados.resumo_diario.map(r => {
+                        const p = r.data.split('-');
+                        return `
+                            <tr class="hover:bg-slate-700/40">
+                                <td class="py-3 px-4 font-semibold text-white">${p[2]}/${p[1]}/${p[0]}</td>
+                                <td class="py-3 px-4 text-slate-300">${r.dia_semana}</td>
+                                <td class="py-3 px-4 font-bold text-emerald-400">${r.total_visitas} visitantes</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+
+                const tbodyEventos = document.getElementById("tabela-eventos-individuais");
+                if (dados.eventos.length === 0) {
+                    tbodyEventos.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-500">Nenhum evento registrado.</td></tr>`;
+                } else {
+                    tbodyEventos.innerHTML = dados.eventos.map(ev => `
+                        <tr class="hover:bg-slate-700/40">
+                            <td class="py-3 px-4 font-mono text-slate-400">#${ev.id}</td>
+                            <td class="py-3 px-4 text-slate-300">${ev.timestamp}</td>
+                            <td class="py-3 px-4">
+                                <span class="px-2.5 py-1 rounded-full text-xs font-semibold ${ev.tipo_evento === 'ENTRADA' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">
+                                    ${ev.tipo_evento}
+                                </span>
+                            </td>
+                            <td class="py-3 px-4 font-bold text-white">${ev.lotacao_momento}</td>
+                        </tr>
+                    `).join('');
+                }
+            } catch (e) {
+                console.error("Erro ao carregar banco:", e);
+            }
+        }
+
+        async function simularEvento(tipo) {
+            let entradas = estadoAtual.entradas_total;
+            let saidas = estadoAtual.saidas_total;
+
+            if (tipo === 'ENTRADA') entradas++;
+            if (tipo === 'SAIDA' && (entradas - saidas) > 0) saidas++;
+
+            await fetch(`${API_BASE}/api/evento`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    tipo_evento: tipo,
+                    entradas_total: entradas,
+                    saidas_total: saidas,
+                    lotacao_atual: Math.max(0, entradas - saidas)
+                })
+            });
+            carregarAnalyticsGeral();
+        }
+
+        async function simularLoteEntradas(qtd) {
+            for (let i = 0; i < qtd; i++) {
+                await simularEvento('ENTRADA');
+            }
+        }
+
+        async function popularDemo7Dias() {
+            const btn = document.getElementById("btn-popular-demo");
+            btn.innerText = "⏳ Gravando no SQLite...";
+            btn.disabled = true;
+
+            try {
+                await fetch(`${API_BASE}/api/popular_demo`, { method: "POST" });
+                await carregarAnalyticsGeral();
+                btn.innerText = "✅ 7 Dias Gerados com Sucesso!";
+                setTimeout(() => {
+                    btn.innerText = "📅 Gerar Histórico de 7 Dias no Banco";
+                    btn.disabled = false;
+                }, 2500);
+            } catch (e) {
+                btn.innerText = "❌ Erro ao gerar";
+                btn.disabled = false;
+            }
+        }
+
+        async function zerarContadores() {
+            await fetch(`${API_BASE}/api/recalibrar?novas_entradas=0&novas_saidas=0`, { method: "POST" });
+        }
+    </script>
+</body>
+</html>
